@@ -89,7 +89,7 @@ else
   echo "✅ SnapAPI ya está instalado para este kernel y versión."
 fi
 ```
-
+Esto detecta automáticamente la versión de SnapAPI que tenés en tu sistema y compila para el kernel actual.
 ### Para activarlo:
 
 ```bash
