@@ -12,6 +12,8 @@ Ejecutá esto una sola vez en cada VPS:
 
 ```bash
 sudo apt update
+```
+```bash
 sudo apt install dkms build-essential linux-headers-$(uname -r) -y
 ```
 
