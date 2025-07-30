@@ -74,10 +74,6 @@ Podés guardar este script en `/usr/local/bin/check-snapapi.sh`:
 ```bash
 vim /home/check-snapapi.sh
 ```
-
-```bash
-
-```
 ```bash
 #!/bin/bash
 VERSION=$(basename $(ls -d /usr/src/snapapi26-* | sort -V | tail -1) | cut -d '-' -f2)
