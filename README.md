@@ -71,7 +71,13 @@ Desde el portal Acronis (botón “Run now”) o desde línea de comando si usá
 # 🛠 Tip: Script dinámico que detecta la versión automáticamente
 
 Podés guardar este script en `/usr/local/bin/check-snapapi.sh`:
+```bash
+vim /home/check-snapapi.sh
+```
 
+```bash
+
+```
 ```bash
 #!/bin/bash
 VERSION=$(basename $(ls -d /usr/src/snapapi26-* | sort -V | tail -1) | cut -d '-' -f2)
@@ -88,6 +94,12 @@ if [ $? -ne 0 ]; then
 else
   echo "✅ SnapAPI ya está instalado para este kernel y versión."
 fi
+```
+```bash
+chmod +x /home/check-snapapi.sh
+```
+```bash
+./home/check-snapapi.sh
 ```
 Esto detecta automáticamente la versión de SnapAPI que tenés en tu sistema y compila para el kernel actual.
 ### Para activarlo:
