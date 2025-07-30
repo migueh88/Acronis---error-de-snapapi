@@ -95,7 +95,7 @@ fi
 chmod +x /home/check-snapapi.sh
 ```
 ```bash
-./home/check-snapapi.sh
+/home/check-snapapi.sh
 ```
 Esto detecta automáticamente la versión de SnapAPI que tenés en tu sistema y compila para el kernel actual.
 ### Para activarlo:
