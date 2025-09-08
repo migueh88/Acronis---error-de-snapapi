@@ -3,7 +3,7 @@
 ### 1) Guardá el script
 
 ```bash
-nano /usr/local/sbin/fix-snapapi.sh
+vim fix-snapapi.sh
 ```
 
 Pegá esto adentro y guardá:
@@ -153,15 +153,15 @@ main "$@"
 Dale permisos:
 
 ```bash
-chmod +x /usr/local/sbin/fix-snapapi.sh
+chmod +x fix-snapapi.sh
 ```
 
 ### 2) Ejecutalo
 
 ```bash
-sudo /usr/local/sbin/fix-snapapi.sh
+sudo fix-snapapi.sh
 # opcional: limpiar entradas viejas de DKMS
-sudo /usr/local/sbin/fix-snapapi.sh --clean-old
+sudo fix-snapapi.sh --clean-old
 ```
 
 ### 3) Qué deberías ver al final
