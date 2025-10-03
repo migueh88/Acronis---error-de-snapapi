@@ -12,32 +12,32 @@ Pegá esto adentro y guardá:
 #!/usr/bin/env bash
 # fix-snapapi.sh — Recompila e instala SnapAPI para el kernel activo, lo carga,
 # asegura /dev/snapapi y reinicia servicios de Acronis.
+#
 # Uso:
-#   sudo ./fix-snapapi.sh                 # modo VERBOSO (muestra progreso)
-#   sudo ./fix-snapapi.sh --quiet         # modo silencioso
-#   sudo ./fix-snapapi.sh --clean-old     # + limpia DKMS antiguos
-#   sudo ./fix-snapapi.sh --verbose       # fuerza verboso (por si cambiás el default)
+#   sudo ./fix-snapapi.sh                 # VERBOSO (muestra progreso)
+#   sudo ./fix-snapapi.sh --quiet         # Silencioso
+#   sudo ./fix-snapapi.sh --clean-old     # Limpia DKMS antiguos
+#   sudo ./fix-snapapi.sh --verbose       # Fuerza verboso
+#
 set -Eeuo pipefail
-
 export DEBIAN_FRONTEND=noninteractive
 
-# ---- Flags -------------------------------------------------------------------
-VERBOSE=1      # por defecto mostramos progreso
+# --------- Flags ---------
+VERBOSE=1
 CLEAN_OLD=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --verbose|-v) VERBOSE=1;;
     --quiet|-q)   VERBOSE=0;;
     --clean-old)  CLEAN_OLD=1;;
-    *) ;;
+    *) ;; # ignora extras
   esac
   shift
 done
 
-# Wrapper que controla la verbosidad de los comandos largos
+# Wrapper para controlar verbosidad de comandos largos
 run(){ if [[ $VERBOSE -eq 1 ]]; then "$@"; else "$@" >/dev/null 2>&1; fi }
 
-# ------------------------------------------------------------------------------
 KERN="$(uname -r)"
 
 log(){ echo -e "[*] $*"; }
@@ -53,22 +53,19 @@ require_root(){
 
 ensure_build_tools(){
   log "Instalando dependencias (headers exactos, dkms, build-essential)…"
-  # apt-get update (silencioso si --quiet)
+
+  # apt-get update
   if [[ $VERBOSE -eq 1 ]]; then
     run apt-get update
   else
     run apt-get update -qq
   fi
 
-  # Opciones para apt-get install
-  APT_INSTALL_OPTS=(-y)
-  if [[ $VERBOSE -eq 1 ]]; then
-    APT_INSTALL_OPTS+=(-o Dpkg::Progress-Fancy=1)
-  else
-    APT_INSTALL_OPTS+=(-qq)
-  fi
+  # Siempre conservar configs locales de dpkg (evita prompts)
+  APT_INSTALL_OPTS=(-y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold)
+  [[ $VERBOSE -eq 0 ]] && APT_INSTALL_OPTS+=(-qq) || APT_INSTALL_OPTS+=(-o Dpkg::Progress-Fancy=1)
 
-  # Intento 1: headers exactos del kernel
+  # Intento 1: headers exactos
   if ! run apt-get install "${APT_INSTALL_OPTS[@]}" "linux-headers-${KERN}" dkms build-essential; then
     log "No se pudieron instalar headers exactos; probando genéricos…"
     run apt-get install "${APT_INSTALL_OPTS[@]}" linux-headers-generic dkms build-essential \
@@ -79,6 +76,10 @@ ensure_build_tools(){
     err "No están disponibles los headers para ${KERN}. Instalalos y reintentá."
     exit 1
   fi
+
+  # Si quedó algo a medio configurar por paquetes externos, intentamos completar
+  run dpkg --configure -a || true
+
   ok "Dependencias listas."
 }
 
@@ -87,8 +88,8 @@ detect_snapapi(){
   src=$(ls -1d /usr/src/snapapi*/ 2>/dev/null || true)
   if [[ -z "$src" ]]; then
     log "No se encuentran fuentes en /usr/src/snapapi*/ — instalando paquete de Acronis…"
-    if ! run apt-get install -y acronis-snapapi; then
-      run apt-get install -y acronis-snapapi-dkms || true
+    if ! run apt-get install -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold acronis-snapapi; then
+      run apt-get install -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold acronis-snapapi-dkms || true
     fi
   fi
 
