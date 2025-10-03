@@ -12,11 +12,33 @@ Pegá esto adentro y guardá:
 #!/usr/bin/env bash
 # fix-snapapi.sh — Recompila e instala SnapAPI para el kernel activo, lo carga,
 # asegura /dev/snapapi y reinicia servicios de Acronis.
-# Uso: sudo /usr/local/sbin/fix-snapapi.sh [--clean-old]
+# Uso:
+#   sudo ./fix-snapapi.sh                 # modo VERBOSO (muestra progreso)
+#   sudo ./fix-snapapi.sh --quiet         # modo silencioso
+#   sudo ./fix-snapapi.sh --clean-old     # + limpia DKMS antiguos
+#   sudo ./fix-snapapi.sh --verbose       # fuerza verboso (por si cambiás el default)
 set -Eeuo pipefail
 
+export DEBIAN_FRONTEND=noninteractive
+
+# ---- Flags -------------------------------------------------------------------
+VERBOSE=1      # por defecto mostramos progreso
+CLEAN_OLD=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --verbose|-v) VERBOSE=1;;
+    --quiet|-q)   VERBOSE=0;;
+    --clean-old)  CLEAN_OLD=1;;
+    *) ;;
+  esac
+  shift
+done
+
+# Wrapper que controla la verbosidad de los comandos largos
+run(){ if [[ $VERBOSE -eq 1 ]]; then "$@"; else "$@" >/dev/null 2>&1; fi }
+
+# ------------------------------------------------------------------------------
 KERN="$(uname -r)"
-CLEAN_OLD="${1:-}"
 
 log(){ echo -e "[*] $*"; }
 ok(){  echo -e "[✓] $*"; }
@@ -31,14 +53,26 @@ require_root(){
 
 ensure_build_tools(){
   log "Instalando dependencias (headers exactos, dkms, build-essential)…"
-  apt-get update -qq || true
+  # apt-get update (silencioso si --quiet)
+  if [[ $VERBOSE -eq 1 ]]; then
+    run apt-get update
+  else
+    run apt-get update -qq
+  fi
+
+  # Opciones para apt-get install
+  APT_INSTALL_OPTS=(-y)
+  if [[ $VERBOSE -eq 1 ]]; then
+    APT_INSTALL_OPTS+=(-o Dpkg::Progress-Fancy=1)
+  else
+    APT_INSTALL_OPTS+=(-qq)
+  fi
 
   # Intento 1: headers exactos del kernel
-  if ! apt-get install -y "linux-headers-${KERN}" dkms build-essential >/dev/null 2>&1; then
+  if ! run apt-get install "${APT_INSTALL_OPTS[@]}" "linux-headers-${KERN}" dkms build-essential; then
     log "No se pudieron instalar headers exactos; probando genéricos…"
-    # Intento 2: headers genéricos (útil en kernels de nubes)
-    apt-get install -y linux-headers-generic dkms build-essential >/dev/null 2>&1 \
-      || apt-get install -y linux-headers-virtual dkms build-essential >/dev/null 2>&1 || true
+    run apt-get install "${APT_INSTALL_OPTS[@]}" linux-headers-generic dkms build-essential \
+      || run apt-get install "${APT_INSTALL_OPTS[@]}" linux-headers-virtual dkms build-essential || true
   fi
 
   if [[ ! -e "/lib/modules/${KERN}/build/Makefile" ]]; then
@@ -53,9 +87,8 @@ detect_snapapi(){
   src=$(ls -1d /usr/src/snapapi*/ 2>/dev/null || true)
   if [[ -z "$src" ]]; then
     log "No se encuentran fuentes en /usr/src/snapapi*/ — instalando paquete de Acronis…"
-    # Según instalación puede ser uno u otro
-    if ! apt-get install -y acronis-snapapi >/dev/null 2>&1; then
-      apt-get install -y acronis-snapapi-dkms >/dev/null 2>&1 || true
+    if ! run apt-get install -y acronis-snapapi; then
+      run apt-get install -y acronis-snapapi-dkms || true
     fi
   fi
 
@@ -75,16 +108,14 @@ detect_snapapi(){
 
 build_install_dkms(){
   log "Compilando/instalando ${MODNAME}/${VER} para kernel ${KERN} con DKMS…"
-  # Limpiar restos para este kernel si existieran
-  dkms remove -m "${MODNAME}" -v "${VER}" -k "${KERN}" --all >/dev/null 2>&1 || true
+  run dkms remove -m "${MODNAME}" -v "${VER}" -k "${KERN}" --all || true
 
-  if ! dkms install -m "${MODNAME}" -v "${VER}" -k "${KERN}" >/dev/null 2>&1; then
+  if ! run dkms install -m "${MODNAME}" -v "${VER}" -k "${KERN}"; then
     log "dkms install directo falló — intentando build + install…"
-    dkms build   -m "${MODNAME}" -v "${VER}" -k "${KERN}" >/dev/null
-    dkms install -m "${MODNAME}" -v "${VER}" -k "${KERN}" >/dev/null
+    run dkms build   -m "${MODNAME}" -v "${VER}" -k "${KERN}"
+    run dkms install -m "${MODNAME}" -v "${VER}" -k "${KERN}"
   fi
 
-  # Verificación
   if ! dkms status | grep -Fq "${MODNAME}/${VER}, ${KERN}"; then
     err "DKMS no dejó ${MODNAME} instalado para ${KERN}. Revisá el log:"
     err "  /var/lib/dkms/${MODNAME}/${VER}/build/make.log"
@@ -95,10 +126,9 @@ build_install_dkms(){
 
 load_module(){
   log "Cargando módulo (${MODNAME})…"
-  if ! modprobe "${MODNAME}" 2>/dev/null; then
-    # Intento alternativo por si el nombre difiere
-    [[ "${MODNAME}" == "snapapi26" ]] && modprobe snapapi 2>/dev/null || true
-    [[ "${MODNAME}" == "snapapi"   ]] && modprobe snapapi26 2>/dev/null || true
+  if ! run modprobe "${MODNAME}"; then
+    [[ "${MODNAME}" == "snapapi26" ]] && run modprobe snapapi || true
+    [[ "${MODNAME}" == "snapapi"   ]] && run modprobe snapapi26 || true
   fi
 
   if lsmod | grep -q '^snapapi'; then
@@ -111,7 +141,6 @@ load_module(){
         err "Opciones: desactivar Secure Boot o firmar el módulo con MOK."
       fi
     fi
-    # Mostrar pistas del .ko y del kernel
     modinfo snapapi26 2>/dev/null || modinfo snapapi 2>/dev/null || true
     dmesg | tail -n50 | sed 's/^/  /' || true
     exit 4
@@ -126,7 +155,7 @@ ensure_device_node(){
 
   if [[ -n "${maj:-}" && "${maj}" =~ ^[0-9]+$ ]]; then
     if [[ ! -e /dev/snapapi ]]; then
-      mknod -m 600 /dev/snapapi c "$maj" 0
+      run mknod -m 600 /dev/snapapi c "$maj" 0
       ok "/dev/snapapi creado (major=${maj})."
     else
       ok "/dev/snapapi ya existe (major=${maj})."
@@ -138,34 +167,33 @@ ensure_device_node(){
 }
 
 persist_device_node(){
-  # Persistencia via systemd-tmpfiles (si está disponible y tenemos un major válido)
   [[ -z "${PERSIST_MAJOR:-}" ]] && return 0
   if command -v systemd-tmpfiles >/dev/null 2>&1; then
     log "Escribiendo /etc/tmpfiles.d/snapapi.conf para persistir /dev/snapapi…"
     cat > /etc/tmpfiles.d/snapapi.conf <<EOF
 c /dev/snapapi 0600 root root - ${PERSIST_MAJOR}:0
 EOF
-    systemd-tmpfiles --create /etc/tmpfiles.d/snapapi.conf >/dev/null 2>&1 || true
+    run systemd-tmpfiles --create /etc/tmpfiles.d/snapapi.conf
     ok "Persistencia configurada (major=${PERSIST_MAJOR})."
   fi
 }
 
 restart_services(){
   log "Reiniciando servicios de Acronis…"
-  systemctl restart acronis_mms  2>/dev/null || true
-  systemctl restart acronisagent 2>/dev/null || true
-  systemctl restart acronis_agent 2>/dev/null || true
+  run systemctl restart acronis_mms
+  run systemctl restart acronisagent || true
+  run systemctl restart acronis_agent || true
   ok "Servicios reiniciados (si existían)."
 }
 
 clean_old(){
-  [[ "$CLEAN_OLD" == "--clean-old" ]] || return 0
+  [[ $CLEAN_OLD -eq 1 ]] || return 0
   log "Limpieza de entradas DKMS antiguas (conservando ${KERN})…"
   mapfile -t KLIST < <(dkms status | awk -F, -v m="$MODNAME" -v v="$VER" \
     '$1 ~ m"/"v {gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2); print $2}' | sort -u)
   for K in "${KLIST[@]}"; do
     if [[ "$K" != "${KERN}" ]]; then
-      dkms remove -m "${MODNAME}" -v "${VER}" -k "${K}" --all >/dev/null 2>&1 || true
+      run dkms remove -m "${MODNAME}" -v "${VER}" -k "${K}" --all || true
     fi
   done
   ok "Limpieza DKMS completada."
