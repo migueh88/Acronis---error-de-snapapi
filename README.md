@@ -11,31 +11,35 @@ Pegá esto adentro y guardá:
 ```bash
 #!/usr/bin/env bash
 # fix-snapapi.sh — Recompila e instala SnapAPI para el kernel activo, lo carga,
-# asegura /dev/snapapi y reinicia servicios de Acronis.
+# asegura /dev/snapapi, y deja compilado para otros kernels instalados (post-reboot).
 #
 # Uso:
-#   sudo ./fix-snapapi.sh                 # VERBOSO (muestra progreso)
+#   sudo ./fix-snapapi.sh                 # Verboso por defecto
 #   sudo ./fix-snapapi.sh --quiet         # Silencioso
-#   sudo ./fix-snapapi.sh --clean-old     # Limpia DKMS antiguos
+#   sudo ./fix-snapapi.sh --clean-old     # Limpia DKMS de kernels que ya no existen
 #   sudo ./fix-snapapi.sh --verbose       # Fuerza verboso
+#   sudo ./fix-snapapi.sh --load-at-boot  # Carga snapapi en cada arranque (modules-load.d)
 #
 set -Eeuo pipefail
+trap 'echo -e "[✗] Falló en la línea $LINENO"; exit 99' ERR
 export DEBIAN_FRONTEND=noninteractive
 
 # --------- Flags ---------
 VERBOSE=1
 CLEAN_OLD=0
+LOAD_AT_BOOT=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --verbose|-v) VERBOSE=1;;
     --quiet|-q)   VERBOSE=0;;
     --clean-old)  CLEAN_OLD=1;;
+    --load-at-boot) LOAD_AT_BOOT=1;;
     *) ;; # ignora extras
   esac
   shift
 done
 
-# Wrapper para controlar verbosidad de comandos largos
+# Wrapper para controlar verbosidad
 run(){ if [[ $VERBOSE -eq 1 ]]; then "$@"; else "$@" >/dev/null 2>&1; fi }
 
 KERN="$(uname -r)"
@@ -54,20 +58,18 @@ require_root(){
 ensure_build_tools(){
   log "Instalando dependencias (headers exactos, dkms, build-essential)…"
 
-  # apt-get update
   if [[ $VERBOSE -eq 1 ]]; then
     run apt-get update
   else
     run apt-get update -qq
   fi
 
-  # Siempre conservar configs locales de dpkg (evita prompts)
   APT_INSTALL_OPTS=(-y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold)
   [[ $VERBOSE -eq 0 ]] && APT_INSTALL_OPTS+=(-qq) || APT_INSTALL_OPTS+=(-o Dpkg::Progress-Fancy=1)
 
-  # Intento 1: headers exactos
+  # Headers del kernel activo + herramientas
   if ! run apt-get install "${APT_INSTALL_OPTS[@]}" "linux-headers-${KERN}" dkms build-essential; then
-    log "No se pudieron instalar headers exactos; probando genéricos…"
+    log "No se pudieron instalar headers exactos; probando genéricos/virtual…"
     run apt-get install "${APT_INSTALL_OPTS[@]}" linux-headers-generic dkms build-essential \
       || run apt-get install "${APT_INSTALL_OPTS[@]}" linux-headers-virtual dkms build-essential || true
   fi
@@ -77,8 +79,9 @@ ensure_build_tools(){
     exit 1
   fi
 
-  # Si quedó algo a medio configurar por paquetes externos, intentamos completar
   run dpkg --configure -a || true
+  # Tener headers futuros para autocompilación
+  run apt-get install "${APT_INSTALL_OPTS[@]}" linux-headers-generic || true
 
   ok "Dependencias listas."
 }
@@ -87,10 +90,9 @@ detect_snapapi(){
   local src
   src=$(ls -1d /usr/src/snapapi*/ 2>/dev/null || true)
   if [[ -z "$src" ]]; then
-    log "No se encuentran fuentes en /usr/src/snapapi*/ — instalando paquete de Acronis…"
-    if ! run apt-get install -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold acronis-snapapi; then
-      run apt-get install -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold acronis-snapapi-dkms || true
-    fi
+    log "No hay fuentes en /usr/src/snapapi*/ — intentando instalar paquete de Acronis…"
+    run apt-get install -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold acronis-snapapi || true
+    run apt-get install -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold acronis-snapapi-dkms || true
   fi
 
   src=$(ls -1d /usr/src/snapapi*/ 2>/dev/null | sort -V | tail -n1 || true)
@@ -100,22 +102,28 @@ detect_snapapi(){
   fi
 
   SRC_DIR="${src%/}"
-  BASENAME="$(basename "$SRC_DIR")"          # ej: snapapi26-0.8.57
+  BASENAME="$(basename "$SRC_DIR")"          # ej: snapapi26-0.8.56
   MODNAME="${BASENAME%-*}"                   # ej: snapapi26
-  VER="${BASENAME#*-}"                       # ej: 0.8.57
+  VER="${BASENAME#*-}"                       # ej: 0.8.56
 
   ok "Detectado módulo ${MODNAME} versión ${VER} en ${SRC_DIR}"
 }
 
 build_install_dkms(){
   log "Compilando/instalando ${MODNAME}/${VER} para kernel ${KERN} con DKMS…"
-  run dkms remove -m "${MODNAME}" -v "${VER}" -k "${KERN}" --all || true
+
+  # NO usar --all junto con -k (provoca error)
+  run dkms remove -m "${MODNAME}" -v "${VER}" -k "${KERN}" || true
 
   if ! run dkms install -m "${MODNAME}" -v "${VER}" -k "${KERN}"; then
     log "dkms install directo falló — intentando build + install…"
     run dkms build   -m "${MODNAME}" -v "${VER}" -k "${KERN}"
     run dkms install -m "${MODNAME}" -v "${VER}" -k "${KERN}"
   fi
+
+  # Compilar también para otros kernels YA instalados (el que booteará tras reinicio)
+  log "Compilando para kernels instalados faltantes (dkms autoinstall)…"
+  run dkms autoinstall
 
   if ! dkms status | grep -Fq "${MODNAME}/${VER}, ${KERN}"; then
     err "DKMS no dejó ${MODNAME} instalado para ${KERN}. Revisá el log:"
@@ -131,6 +139,7 @@ load_module(){
     [[ "${MODNAME}" == "snapapi26" ]] && run modprobe snapapi || true
     [[ "${MODNAME}" == "snapapi"   ]] && run modprobe snapapi26 || true
   fi
+  sleep 1
 
   if lsmod | grep -q '^snapapi'; then
     ok "Módulo SnapAPI cargado."
@@ -138,8 +147,7 @@ load_module(){
     err "El módulo no aparece en lsmod."
     if command -v mokutil >/dev/null 2>&1; then
       if mokutil --sb-state 2>/dev/null | grep -qi enabled; then
-        err "Secure Boot está habilitado. El kernel puede estar bloqueando el módulo sin firmar."
-        err "Opciones: desactivar Secure Boot o firmar el módulo con MOK."
+        err "Secure Boot habilitado. El kernel puede bloquear el módulo sin firmar (MOK)."
       fi
     fi
     modinfo snapapi26 2>/dev/null || modinfo snapapi 2>/dev/null || true
@@ -179,9 +187,16 @@ EOF
   fi
 }
 
+ensure_modules_load(){
+  [[ $LOAD_AT_BOOT -eq 1 ]] || return 0
+  log "Forzando carga de ${MODNAME} en cada arranque (modules-load.d)…"
+  echo "${MODNAME}" > /etc/modules-load.d/snapapi.conf
+  ok "Creado /etc/modules-load.d/snapapi.conf"
+}
+
 restart_services(){
   log "Reiniciando servicios de Acronis…"
-  run systemctl restart acronis_mms
+  run systemctl restart acronis_mms || true
   run systemctl restart acronisagent || true
   run systemctl restart acronis_agent || true
   ok "Servicios reiniciados (si existían)."
@@ -189,12 +204,16 @@ restart_services(){
 
 clean_old(){
   [[ $CLEAN_OLD -eq 1 ]] || return 0
-  log "Limpieza de entradas DKMS antiguas (conservando ${KERN})…"
+  log "Limpieza de entradas DKMS antiguas (conservando kernels presentes en /lib/modules)…"
+
   mapfile -t KLIST < <(dkms status | awk -F, -v m="$MODNAME" -v v="$VER" \
     '$1 ~ m"/"v {gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2); print $2}' | sort -u)
+
   for K in "${KLIST[@]}"; do
-    if [[ "$K" != "${KERN}" ]]; then
-      run dkms remove -m "${MODNAME}" -v "${VER}" -k "${K}" --all || true
+    # Remover SOLO si ese kernel ya no existe en el sistema
+    if [[ ! -d "/lib/modules/$K" ]]; then
+      log "Eliminando entrada DKMS huérfana para kernel $K…"
+      run dkms remove -m "${MODNAME}" -v "${VER}" -k "${K}" || true
     fi
   done
   ok "Limpieza DKMS completada."
@@ -207,7 +226,7 @@ show_summary(){
   echo "  Módulo:        ${MODNAME} ${VER}"
   local dkms_line
   dkms_line="$(dkms status | grep -F "${MODNAME}/${VER}, ${KERN}" || true)"
-  echo "  DKMS:          ${dkms_line}"
+  echo "  DKMS:          ${dkms_line:-no encontrado}"
   local lsmod_line
   lsmod_line="$(lsmod | (grep -E '^snapapi' || echo 'no cargado'))"
   echo "  lsmod:         ${lsmod_line}"
@@ -222,6 +241,7 @@ main(){
   load_module
   ensure_device_node
   persist_device_node
+  ensure_modules_load
   restart_services
   clean_old
   show_summary
