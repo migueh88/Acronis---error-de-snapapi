@@ -268,9 +268,7 @@ chmod +x fix-snapapi.sh
 ### 2) Ejecutalo
 
 ```bash
-sudo fix-snapapi.sh
-# opcional: limpiar entradas viejas de DKMS
-sudo fix-snapapi.sh --clean-old
+./fix-snapapi.sh --clean-old --load-at-boot
 ```
 
 ### 3) Qué deberías ver al final
