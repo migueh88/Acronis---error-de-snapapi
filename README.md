@@ -102,9 +102,9 @@ detect_snapapi(){
   fi
 
   SRC_DIR="${src%/}"
-  BASENAME="$(basename "$SRC_DIR")"          # ej: snapapi26-0.8.56
-  MODNAME="${BASENAME%-*}"                   # ej: snapapi26
-  VER="${BASENAME#*-}"                       # ej: 0.8.56
+  BASENAME="$(basename "$SRC_DIR")"
+  MODNAME="${BASENAME%-*}"
+  VER="${BASENAME#*-}"
 
   ok "Detectado módulo ${MODNAME} versión ${VER} en ${SRC_DIR}"
 }
@@ -112,7 +112,6 @@ detect_snapapi(){
 build_install_dkms(){
   log "Compilando/instalando ${MODNAME}/${VER} para kernel ${KERN} con DKMS…"
 
-  # NO usar --all junto con -k (provoca error)
   run dkms remove -m "${MODNAME}" -v "${VER}" -k "${KERN}" || true
 
   if ! run dkms install -m "${MODNAME}" -v "${VER}" -k "${KERN}"; then
@@ -121,11 +120,22 @@ build_install_dkms(){
     run dkms install -m "${MODNAME}" -v "${VER}" -k "${KERN}"
   fi
 
-  # Compilar también para otros kernels YA instalados (el que booteará tras reinicio)
   log "Compilando para kernels instalados faltantes (dkms autoinstall)…"
   run dkms autoinstall
 
-  if ! dkms status | grep -Fq "${MODNAME}/${VER}, ${KERN}"; then
+  local status_pattern_slash="${MODNAME}/${VER}, ${KERN}"
+  local status_pattern_comma="${MODNAME}, ${VER}, ${KERN}"
+  local dkms_status status_ok=0
+  dkms_status="$(dkms status || true)"
+  if grep -Fq "${status_pattern_slash}" <<< "${dkms_status}"; then
+    status_ok=1
+  elif grep -Fq "${status_pattern_comma}" <<< "${dkms_status}"; then
+    status_ok=1
+  elif [[ -e "/lib/modules/${KERN}/updates/dkms/${MODNAME}.ko" ]]; then
+    status_ok=1
+  fi
+
+  if [[ ${status_ok} -ne 1 ]]; then
     err "DKMS no dejó ${MODNAME} instalado para ${KERN}. Revisá el log:"
     err "  /var/lib/dkms/${MODNAME}/${VER}/build/make.log"
     exit 3
@@ -179,9 +189,9 @@ persist_device_node(){
   [[ -z "${PERSIST_MAJOR:-}" ]] && return 0
   if command -v systemd-tmpfiles >/dev/null 2>&1; then
     log "Escribiendo /etc/tmpfiles.d/snapapi.conf para persistir /dev/snapapi…"
-    cat > /etc/tmpfiles.d/snapapi.conf <<EOF
+    cat > /etc/tmpfiles.d/snapapi.conf <<EOF2
 c /dev/snapapi 0600 root root - ${PERSIST_MAJOR}:0
-EOF
+EOF2
     run systemd-tmpfiles --create /etc/tmpfiles.d/snapapi.conf
     ok "Persistencia configurada (major=${PERSIST_MAJOR})."
   fi
@@ -197,8 +207,7 @@ ensure_modules_load(){
 restart_services(){
   log "Reiniciando servicios de Acronis…"
   run systemctl restart acronis_mms || true
-  run systemctl restart acronisagent || true
-  run systemctl restart acronis_agent || true
+  run systemctl restart acronis_schedule || true
   ok "Servicios reiniciados (si existían)."
 }
 
@@ -210,7 +219,6 @@ clean_old(){
     '$1 ~ m"/"v {gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2); print $2}' | sort -u)
 
   for K in "${KLIST[@]}"; do
-    # Remover SOLO si ese kernel ya no existe en el sistema
     if [[ ! -d "/lib/modules/$K" ]]; then
       log "Eliminando entrada DKMS huérfana para kernel $K…"
       run dkms remove -m "${MODNAME}" -v "${VER}" -k "${K}" || true
@@ -225,7 +233,7 @@ show_summary(){
   echo "  Kernel activo: ${KERN}"
   echo "  Módulo:        ${MODNAME} ${VER}"
   local dkms_line
-  dkms_line="$(dkms status | grep -F "${MODNAME}/${VER}, ${KERN}" || true)"
+  dkms_line="$(dkms status | grep -F "${MODNAME}" | grep -F "${KERN}" || true)"
   echo "  DKMS:          ${dkms_line:-no encontrado}"
   local lsmod_line
   lsmod_line="$(lsmod | (grep -E '^snapapi' || echo 'no cargado'))"
