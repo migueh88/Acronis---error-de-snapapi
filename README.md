@@ -149,21 +149,25 @@ load_module(){
     [[ "${MODNAME}" == "snapapi26" ]] && run modprobe snapapi || true
     [[ "${MODNAME}" == "snapapi"   ]] && run modprobe snapapi26 || true
   fi
-  sleep 1
-
-  if lsmod | grep -q '^snapapi'; then
-    ok "Módulo SnapAPI cargado."
-  else
-    err "El módulo no aparece en lsmod."
-    if command -v mokutil >/dev/null 2>&1; then
-      if mokutil --sb-state 2>/dev/null | grep -qi enabled; then
-        err "Secure Boot habilitado. El kernel puede bloquear el módulo sin firmar (MOK)."
-      fi
+  local retries=5
+  local delay=1
+  for ((i=0; i<retries; i++)); do
+    if lsmod | grep -q '^snapapi'; then
+      ok "Módulo SnapAPI cargado."
+      return 0
     fi
-    modinfo snapapi26 2>/dev/null || modinfo snapapi 2>/dev/null || true
-    dmesg | tail -n50 | sed 's/^/  /' || true
-    exit 4
+    sleep "${delay}"
+  done
+
+  err "El módulo no aparece en lsmod tras ${retries} intentos."
+  if command -v mokutil >/dev/null 2>&1; then
+    if mokutil --sb-state 2>/dev/null | grep -qi enabled; then
+      err "Secure Boot habilitado. El kernel puede bloquear el módulo sin firmar (MOK)."
+    fi
   fi
+  modinfo snapapi26 2>/dev/null || modinfo snapapi 2>/dev/null || true
+  dmesg | tail -n50 | sed 's/^/  /' || true
+  exit 4
 }
 
 ensure_device_node(){
@@ -206,9 +210,37 @@ ensure_modules_load(){
 
 restart_services(){
   log "Reiniciando servicios de Acronis…"
-  run systemctl restart acronis_mms || true
-  run systemctl restart acronis_schedule || true
-  ok "Servicios reiniciados (si existían)."
+  local services=(acronis_mms acronis_schedule)
+  local restarted=0
+
+  for svc in "${services[@]}"; do
+    if ! systemctl list-unit-files "${svc}.service" >/dev/null 2>&1 && \
+       ! systemctl status "${svc}" >/dev/null 2>&1; then
+      log "  Servicio ${svc} no encontrado; se omite."
+      continue
+    fi
+
+    if ! run systemctl restart "${svc}"; then
+      err "No pude reiniciar ${svc}. Ejecutá: systemctl status ${svc}"
+      exit 5
+    fi
+
+    if ! systemctl is-active --quiet "${svc}"; then
+      err "${svc} no quedó activo tras el restart. Revisá: systemctl status ${svc}"
+      exit 5
+    fi
+
+    local pid
+    pid="$(systemctl show -p ExecMainPID --value "${svc}" 2>/dev/null || true)"
+    log "  ${svc} activo (PID ${pid:-desconocido})."
+    restarted=1
+  done
+
+  if [[ $restarted -eq 1 ]]; then
+    ok "Servicios de Acronis reiniciados."
+  else
+    ok "No había servicios de Acronis para reiniciar."
+  fi
 }
 
 clean_old(){
