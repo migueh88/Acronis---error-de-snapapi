@@ -1,4 +1,4 @@
-¡Listo! Acá tenés un script **todo-en-uno** para compilar/instalar SnapAPI para el kernel activo, cargar el módulo y reiniciar el servicio de Acronis. Es idempotente y te avisa si Secure Boot lo está bloqueando.
+script **todo-en-uno** para compilar/instalar SnapAPI para el kernel activo, cargar el módulo y reiniciar el servicio de Acronis. Es idempotente y te avisa si Secure Boot lo está bloqueando.
 
 ### 1) Guardá el script
 
@@ -308,5 +308,3 @@ chmod +x fix-snapapi.sh
 * `DKMS instaló snapapiXX para 5.15.0-151-generic.`
 * `Módulo SnapAPI cargado.`
 * En el resumen: `lsmod` mostrando `snapapi26` (o `snapapi`).
-
-Si al cargar el módulo te advierte sobre **Secure Boot habilitado**, contame y te paso el mini-procedimiento para **firmar el módulo con MOK** (así no tenés que desactivar Secure Boot).
